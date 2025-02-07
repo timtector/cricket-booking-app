@@ -2,153 +2,133 @@
 session_start();
 include 'db.php';
 
-// Only allow admin access (adjust logic as needed)
-//if (!isset($_SESSION['role']) || $_SESSION['role'] !== 'admin') {
-//    header("Location: index.php");
-//    exit();
-//}
+// Handle booking update or cancellation
+if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+    if (isset($_POST['update_booking'])) {
+        // Update booking
+        $booking_id = mysqli_real_escape_string($conn, $_POST['booking_id']);
+        $booked_by = mysqli_real_escape_string($conn, $_POST['booked_by']);
 
-// Process admin booking update if form is submitted.
-if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['admin_booking'])) {
-    $pitch_id  = mysqli_real_escape_string($conn, $_POST['pitch_id']);
-    $day       = mysqli_real_escape_string($conn, $_POST['day']);
-    $time      = mysqli_real_escape_string($conn, $_POST['time']);
-    $booked_by = mysqli_real_escape_string($conn, $_POST['booked_by']);
-    
-    // Insert or update the booking.
-    $query = "INSERT INTO bookings (pitch_id, day, time, booked_by)
-              VALUES ('$pitch_id', '$day', '$time', '$booked_by')
-              ON DUPLICATE KEY UPDATE booked_by='$booked_by'";
-              
-    if (mysqli_query($conn, $query)) {
-        $success_msg = "Slot booked/updated successfully!";
-    } else {
-        $error_msg = "Error booking slot: " . mysqli_error($conn);
-    }
-}
+        $query = "UPDATE bookings SET booked_by='$booked_by' WHERE id='$booking_id'";
+        if (mysqli_query($conn, $query)) {
+            $success_msg = "Booking updated successfully!";
+        } else {
+            $error_msg = "Error updating booking: " . mysqli_error($conn);
+        }
+    } elseif (isset($_POST['cancel_booking'])) {
+        // Cancel booking
+        $booking_id = mysqli_real_escape_string($conn, $_POST['booking_id']);
 
-// Allow admin to select a date. Default to today.
-$selected_date = isset($_GET['date']) 
-    ? mysqli_real_escape_string($conn, $_GET['date']) 
-    : date('Y-m-d');
-
-// First, retrieve all individual nets (pitches) for later use.
-$pitchesResult = mysqli_query($conn, "SELECT * FROM pitches");
-$pitches = [];
-while ($row = mysqli_fetch_assoc($pitchesResult)) {
-    $pitches[$row['id']] = $row;
-}
-
-// Fetch all booking times for the selected date (joined with pitches and any booking info).
-// Notice the use of SUBSTRING(b.time, 1, 5) so that "08:00:00" becomes "08:00"
-$query = "SELECT bt.*, p.name AS pitch_name, IFNULL(b.booked_by, '') AS booked_by
-          FROM booking_times bt
-          JOIN pitches p ON bt.pitch_id = p.id
-          LEFT JOIN bookings b 
-            ON bt.pitch_id = b.pitch_id 
-           AND bt.day = b.day 
-           AND bt.start_time = SUBSTRING(b.time, 1, 5)
-          WHERE bt.day = '$selected_date'
-          ORDER BY bt.pitch_id, bt.start_time";
-$result = mysqli_query($conn, $query);
-
-$data = [];
-if (mysqli_num_rows($result) > 0) {
-    // If records exist, use them.
-    while ($row = mysqli_fetch_assoc($result)) {
-        $data[] = $row;
-    }
-} else {
-    // No records in booking_times for this day? Auto‑generate time slots.
-    foreach ($pitches as $pitch_id => $pitch) {
-        for ($hour = 8; $hour < 20; $hour++) {
-            $start_time = sprintf("%02d:00", $hour);
-            $end_time   = sprintf("%02d:00", $hour + 1);
-            $data[] = [
-                'pitch_id'   => $pitch_id,
-                'day'        => $selected_date,
-                'start_time' => $start_time,
-                'end_time'   => $end_time,
-                'pitch_name' => $pitch['name'],
-                'booked_by'  => ''
-            ];
+        $query = "DELETE FROM bookings WHERE id='$booking_id'";
+        if (mysqli_query($conn, $query)) {
+            $success_msg = "Booking canceled successfully!";
+        } else {
+            $error_msg = "Error canceling booking: " . mysqli_error($conn);
         }
     }
 }
+
+// Fetch all nets (pitches)
+$pitchesResult = mysqli_query($conn, "SELECT * FROM pitches");
+$pitches = [];
+while ($row = mysqli_fetch_assoc($pitchesResult)) {
+    $pitches[$row['id']] = $row['name'];
+}
+
+// Get selected date & net
+$selected_date = isset($_GET['date']) ? mysqli_real_escape_string($conn, $_GET['date']) : date('Y-m-d');
+$selected_pitch = isset($_GET['pitch_id']) ? mysqli_real_escape_string($conn, $_GET['pitch_id']) : 'all';
+
+// Query to fetch bookings based on selection
+$query = "SELECT b.id, b.pitch_id, p.name AS pitch_name, b.day, b.time, IFNULL(b.booked_by, '') AS booked_by
+          FROM bookings b
+          JOIN pitches p ON b.pitch_id = p.id
+          WHERE b.day = '$selected_date'";
+
+if ($selected_pitch !== 'all') {
+    $query .= " AND b.pitch_id = '$selected_pitch'";
+}
+
+$query .= " ORDER BY b.pitch_id, b.time";
+$result = mysqli_query($conn, $query);
+
 ?>
+
 <!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Admin Panel - Manage Nets</title>
-  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0-alpha3/dist/css/bootstrap.min.css" rel="stylesheet">
-  <style>
-    .form-inline { 
-      display: flex; 
-      gap: 5px; 
-      align-items: center; 
-    }
-    .form-inline input { 
-      flex: 1; 
-    }
-  </style>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Admin Panel - Manage Nets</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
 </head>
-<body>
-  <div class="container mt-5">
-    <h1 class="text-center">Admin Panel - Manage Nets</h1>
-    
-    <?php if (isset($success_msg)): ?>
-      <div class="alert alert-success"><?= $success_msg; ?></div>
-    <?php endif; ?>
-    <?php if (isset($error_msg)): ?>
-      <div class="alert alert-danger"><?= $error_msg; ?></div>
-    <?php endif; ?>
-    
-    <!-- Date Selection Form -->
-    <form method="GET" action="" class="mb-4 text-center">
-      <label for="date" class="form-label">Select Date:</label>
-      <input type="date" name="date" id="date" class="form-control" value="<?= htmlspecialchars($selected_date); ?>" required>
-      <button type="submit" class="btn btn-primary mt-2">Show Slots</button>
-    </form>
-    
-    <!-- Display Booking Times -->
-    <h3 class="text-center">Booking Times on <?= htmlspecialchars($selected_date); ?></h3>
-    <table class="table table-bordered">
-      <thead>
+<body class="container mt-4">
+
+<h2 class="text-center mb-4">Manage Net Bookings</h2>
+
+<?php if (isset($success_msg)): ?>
+    <div class="alert alert-success"><?= $success_msg; ?></div>
+<?php endif; ?>
+<?php if (isset($error_msg)): ?>
+    <div class="alert alert-danger"><?= $error_msg; ?></div>
+<?php endif; ?>
+
+<!-- Date & Net Selection Form -->
+<form method="GET" action="" class="mb-4 row g-3">
+    <div class="col-md-6">
+        <label for="date" class="form-label">Select Date:</label>
+        <input type="date" name="date" id="date" class="form-control" value="<?= htmlspecialchars($selected_date); ?>" required>
+    </div>
+    <div class="col-md-4">
+        <label for="pitch_id" class="form-label">Select Net:</label>
+        <select name="pitch_id" id="pitch_id" class="form-select">
+            <option value="all" <?= $selected_pitch == 'all' ? 'selected' : ''; ?>>All Nets</option>
+            <?php foreach ($pitches as $id => $name): ?>
+                <option value="<?= $id; ?>" <?= $selected_pitch == $id ? 'selected' : ''; ?>><?= $name; ?></option>
+            <?php endforeach; ?>
+        </select>
+    </div>
+    <div class="col-md-2 d-flex align-items-end">
+        <button type="submit" class="btn btn-primary">Show Bookings</button>
+    </div>
+</form>
+
+<!-- Booking Table -->
+<table class="table table-bordered table-striped">
+    <thead class="table-dark">
         <tr>
-          <th>Net</th>
-          <th>Date</th>
-          <th>Start Time</th>
-          <th>End Time</th>
-          <th>Booked By</th>
-          <th>Action</th>
+            <th>Net</th>
+            <th>Date</th>
+            <th>Time</th>
+            <th>Booked By</th>
+            <th>Action</th>
         </tr>
-      </thead>
-      <tbody>
-        <?php foreach ($data as $row): ?>
-          <!-- Highlight row if the slot is booked -->
-          <tr class="<?= ($row['booked_by'] !== '' ? 'table-danger' : ''); ?>">
-            <td><?= htmlspecialchars($row['pitch_name']); ?></td>
-            <td><?= htmlspecialchars($row['day']); ?></td>
-            <td><?= htmlspecialchars($row['start_time']); ?></td>
-            <td><?= htmlspecialchars($row['end_time']); ?></td>
-            <td><?= htmlspecialchars($row['booked_by']); ?></td>
-            <td>
-              <!-- Inline form to add/update a booking -->
-              <form method="POST" action="" class="form-inline">
-                <input type="hidden" name="pitch_id" value="<?= $row['pitch_id']; ?>">
-                <input type="hidden" name="day" value="<?= htmlspecialchars($row['day']); ?>">
-                <input type="hidden" name="time" value="<?= htmlspecialchars($row['start_time']); ?>">
-                <input type="text" name="booked_by" class="form-control" placeholder="Enter name" value="<?= htmlspecialchars($row['booked_by']); ?>" required>
-                <button type="submit" name="admin_booking" class="btn btn-sm btn-primary">Book/Update</button>
-              </form>
-            </td>
-          </tr>
-        <?php endforeach; ?>
-      </tbody>
-    </table>
-  </div>
-  <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0-alpha3/dist/js/bootstrap.bundle.min.js"></script>
+    </thead>
+    <tbody>
+        <?php while ($row = mysqli_fetch_assoc($result)): ?>
+            <tr class="<?= ($row['booked_by'] !== '' ? 'table-warning' : ''); ?>">
+                <td><?= htmlspecialchars($row['pitch_name']); ?></td>
+                <td><?= htmlspecialchars($row['day']); ?></td>
+                <td><?= htmlspecialchars($row['time']); ?></td>
+                <td><?= htmlspecialchars($row['booked_by']); ?></td>
+                <td>
+                    <!-- Update Booking Form -->
+                    <form method="POST" action="" class="d-inline">
+                        <input type="hidden" name="booking_id" value="<?= $row['id']; ?>">
+                        <input type="text" name="booked_by" class="form-control d-inline w-50" placeholder="Enter new name" value="<?= htmlspecialchars($row['booked_by']); ?>" required>
+                        <button type="submit" name="update_booking" class="btn btn-sm btn-success">Update</button>
+                    </form>
+                    <!-- Cancel Booking Button -->
+                    <form method="POST" action="" class="d-inline">
+                        <input type="hidden" name="booking_id" value="<?= $row['id']; ?>">
+                        <button type="submit" name="cancel_booking" class="btn btn-sm btn-danger">Cancel</button>
+                    </form>
+                </td>
+            </tr>
+        <?php endwhile; ?>
+    </tbody>
+</table>
+
+<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
 </body>
 </html>
